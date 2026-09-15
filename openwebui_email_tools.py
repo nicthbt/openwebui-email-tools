@@ -35,9 +35,9 @@ from imapclient import IMAPClient
 from imapclient.response_types import Envelope, BodyData
 from imapclient.exceptions import IMAPClientError, LoginError
 
+from open_webui.models.users import UserModel
 from open_webui.models.config import Config
 from open_webui.models.files import Files
-from open_webui.models.users import UserModel
 from open_webui.internal.db import get_async_db_context
 from open_webui.routers.files import upload_file_handler
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
@@ -207,7 +207,7 @@ class MailClient:
         if envelope.message_id is not None:
             headers.update(
                 {
-                    "Message-ID": envelope.message_id.decode(),
+                    "Message-ID": envelope.message_id.decode().strip(),
                 }
             )
         if envelope.date is not None:
@@ -220,7 +220,7 @@ class MailClient:
             headers.update(
                 {
                     "Subject": str(
-                        make_header(decode_header(envelope.subject.decode()))
+                        make_header(decode_header(envelope.subject.decode().strip()))
                     ),
                 }
             )
@@ -658,8 +658,8 @@ class Tools:
         message_id = msg.get("Message-ID", None)
 
         # Append message ID to conversation
-        if message_id is not None and message_id not in references:
-            references.append(message_id)
+        if message_id is not None and message_id.strip() not in references:
+            references.append(message_id.strip())
 
         # Build conversation history
         history_text, history_html = self._build_history(msg)
@@ -775,7 +775,7 @@ class Tools:
         score: float = None,
     ) -> dict:
         result = {
-            "path": f'/{mailbox}/{message_id}/{subject.replace("/", "-").strip()}.eml',
+            "path": f'/{mailbox}/{message_id}/{subject.replace("/", "-")}.eml',
             "date": date.isoformat(),
             "mailbox": mailbox,
             "subject": subject,

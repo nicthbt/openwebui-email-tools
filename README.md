@@ -8,11 +8,11 @@ Search on mail server for information and fetch specific message content using O
 - Replies to conversations and threads.
 - Searches for messages in specified mailboxes.
 - Ranks search results using keywords scoring and email date.
-- Downloads messages and processes content.
+- Downloads messages as EML files and processes content in vector database.
 - Caches messages by content hash.
 - Inspects messages and retrieves relevant parts.
-- Stores credentials in User Valves settings.
-- Supports IMAP protocol
+- Secures identity and access management with isolated/user-based authentication.
+- Supports IMAP protocol.
 
 ## Available tools
 
@@ -83,12 +83,12 @@ The output contains:
 
 ## Installation
 
-1. Go to Workspace in Open WebUI.
-2. Create a new tool from the Tools tab.
+1. Go to `Workspace` in Open WebUI.
+2. Create a new tool from the `Tools` tab.
 3. Paste the content of `openwebui_email_tools.py` and save the tool.
-4. Configure the mail address and password for each user.
+4. Enable the tool in your custom model in `Models`.
 5. Configure the tool valves to change default settings.
-6. Enable the tool in your custom model.
+6. Configure the mail address and password for each user.
 
 ## Configuration
 
@@ -103,7 +103,7 @@ The output contains:
 
 | Setting | Default | Description |
 |---|---:|---|
-| `protocol` | `imap` | Connection method: `imap`. |
+| `protocol` | `imap` | Connection method. |
 | `verify_ssl` | `true` | SSL certificates verification. |
 | `host` | `host.docker.internal` | Server hostname or IP address reachable from the Open WebUI container. |
 | `port` | Protocol default | Optional custom server port. |
@@ -114,8 +114,15 @@ When `port` is not set, the protocol default port (`993`) is used.
 
 ## Security
 
-- Enable encryption to store credentials (set a strong `WEBUI_SECRET_KEY` and set `ENABLE_VALVE_ENCRYPTION` to `true`).
-- Restrict network access between Open WebUI and the mail server.
+**Apple and Google require to setup an app password** to access your account over the IMAP protocol:
+- Apple: https://account.apple.com/account/manage
+- Google: https://myaccount.google.com/apppasswords
+
+**Enable encryption** to securely store credentials:
+- Set `WEBUI_SECRET_KEY` (generate a secure key with `openssl rand -hex 32`).
+- Set `ENABLE_VALVE_ENCRYPTION` to `true`.
+
+Restrict network access between Open WebUI and the calendar server.
 
 ## Compatibility
 
@@ -125,7 +132,9 @@ The tool imports internal Open WebUI modules, so compatibility with earlier or l
 
 ## Requirements
 
-Allow Open WebUI to install listed requirements (set `ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS` to `true` and `OFFLINE_MODE` to `false`).
+Allow Open WebUI to install listed requirements:
+- Set `ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS` to `true`.
+- Set `OFFLINE_MODE` to `false`.
 
 The tool relies on a 3rd party Python package:
 - [imapclient](https://github.com/mjs/imapclient)
