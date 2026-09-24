@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/uppersafe/
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.3.7
+version: 1.3.8
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -283,6 +283,7 @@ def with_context(func):
         try:
             __request__ = kwargs.get("__request__", None)
             __user__ = kwargs.get("__user__", None)
+            __metadata__ = kwargs.get("__metadata__", None)
             __event_emitter__ = kwargs.get("__event_emitter__", None)
             __event_call__ = kwargs.get("__event_call__", None)
 
@@ -290,6 +291,11 @@ def with_context(func):
                 raise ValueError("Request context not available")
             if __user__ is None:
                 raise ValueError("User context not available")
+            if __metadata__ is None:
+                raise ValueError("Metadata context not available")
+            else:
+                if __metadata__.get("files", None) is None:
+                    __metadata__["files"] = []
 
             user = UserModel(**__user__)
             mailaddr, password = self._get_credentials(__user__.get("valves"))
@@ -953,8 +959,9 @@ class Tools:
         mailboxes: list = [],
         __request__: Request = None,
         __user__: dict = None,
-        __event_emitter__=None,
-        __event_call__=None,
+        __metadata__: dict = None,
+        __event_emitter__: callable = None,
+        __event_call__: callable = None,
     ) -> str:
         """
         Search for messages on mail server.
@@ -993,16 +1000,17 @@ class Tools:
         messages: list,
         __request__: Request = None,
         __user__: dict = None,
-        __event_emitter__=None,
-        __event_call__=None,
+        __metadata__: dict = None,
+        __event_emitter__: callable = None,
+        __event_call__: callable = None,
     ) -> str:
         """
         Search for information in specific messages on mail server.
-        Best for efficient content retrieval.
+        Best for semantic content retrieval.
 
         :param query: The search query to look up with the RAG engine
         :param messages: A list of path for messages to look into
-        :return: JSON with results containing EML filename, file ID and search snippets for each message
+        :return: JSON with results containing file ID, filename and search snippets for each message
         """
         user, session, mailaddr = self.context.get()
 
@@ -1072,8 +1080,8 @@ class Tools:
                 results.update(
                     {
                         source_hash: {
-                            "filename": name,
                             "id": source,
+                            "name": name,
                             "snippets": snippets + [document],
                         }
                     }
@@ -1098,8 +1106,9 @@ class Tools:
         cc: list = None,
         __request__: Request = None,
         __user__: dict = None,
-        __event_emitter__=None,
-        __event_call__=None,
+        __metadata__: dict = None,
+        __event_emitter__: callable = None,
+        __event_call__: callable = None,
     ) -> str:
         """
         Write a draft message on mail server.

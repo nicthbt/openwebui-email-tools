@@ -52,8 +52,8 @@ Input parameters:
 
 The output contains for each result:
 
-- EML filename
 - Open WebUI file ID
+- Filename
 - Text snippets
 
 ### `write_email_message`
