@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/uppersafe/
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.4.2
+version: 1.4.3
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -890,7 +890,7 @@ class Tools:
     ) -> tuple:
         async with get_async_db_context() as db:
             # Search for file in cache
-            file_hash = blake2b(content).hexdigest()
+            file_hash = blake2b(source.encode() + b"\0" + content).hexdigest()
             file_id, file_collection = await self._get_cache_file(
                 file_hash,
                 user=user,
