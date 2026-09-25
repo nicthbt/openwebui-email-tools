@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/uppersafe/
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.4.3
+version: 1.4.4
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -1114,7 +1114,8 @@ class Tools:
         ):
             for distance, metadata, document in zip(distances, metadatas, documents):
                 file_id = metadata.get("file_id")
-                source = metadata.get("source")
+                file_metadata = await Files.get_file_metadata_by_id(file_id)
+                source = file_metadata.meta.get("source") or metadata.get("source")
                 source_hash = blake2b(source.encode()).hexdigest()
                 # Add new source to results or update existing source with new snippets
                 snippets = results.get(source_hash, {}).get("snippets", [])
