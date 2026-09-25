@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/uppersafe/
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.4.1
+version: 1.4.2
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -1065,7 +1065,7 @@ class Tools:
 
         for path in messages:
             # Extract mailbox, message ID and filename
-            match = re.search(r"/([^/]+)/(<[^>]+>)/(.*)", path)
+            match = re.search(r"^/(.+)/(<[^>]+>)/(.*)$", path)
             mailbox, message_id, filename = (
                 match.group(1),
                 match.group(2),
@@ -1185,7 +1185,7 @@ class Tools:
             path = reply_to
 
             # Extract mailbox, message ID and filename
-            match = re.search(r"/([^/]+)/(<[^>]+>)/(.*)", path)
+            match = re.search(r"^/(.+)/(<[^>]+>)/(.*)$", path)
             mailbox, message_id, filename = (
                 match.group(1),
                 match.group(2),
