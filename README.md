@@ -53,7 +53,7 @@ Input parameters:
 The output contains for each result:
 
 - Open WebUI file ID
-- Filename
+- Source path
 - Text snippets
 
 ### `write_email_message`

@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/uppersafe/
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.4.0
+version: 1.4.1
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -880,6 +880,7 @@ class Tools:
 
     async def _upload_file(
         self,
+        source: str,
         filename: str,
         mimetype: str,
         content: bytes,
@@ -912,6 +913,13 @@ class Tools:
                 )
                 file_id = file.id
 
+            # Update source
+            await Files.update_file_metadata_by_id(
+                file_id,
+                {"source": source},
+                db=db,
+            )
+
             # Process file if not in cache
             if file_collection is None and process is True:
                 log.info(f"Processing '{filename}'")
@@ -935,12 +943,13 @@ class Tools:
     async def _emit_sources(
         self,
         event_emitter,
-        sources: list,
+        files: list,
     ) -> None:
-        for source in sources:
-            file_id = source.get("file_id")
-            filename = source.get("name")
-            snippets = source.get("snippets")
+        for file in files:
+            file_id = file.get("id")
+            source = file.get("source")
+            filename = os.path.basename(source)
+            snippets = file.get("snippets")
             if event_emitter:
                 await event_emitter(
                     {
@@ -956,7 +965,7 @@ class Tools:
                                 {
                                     "file_id": file_id,
                                     "name": filename,
-                                    "source": filename,
+                                    "source": source,
                                 }
                                 for snippet in snippets
                             ],
@@ -1042,7 +1051,7 @@ class Tools:
 
         :param query: The search query to look up with the RAG engine
         :param messages: A list of path for messages to look into
-        :return: JSON with results containing file ID, filename and search snippets for each message
+        :return: JSON with results containing file ID, source path and search snippets for each message
         """
         user, session, mailaddr = self.context.get()
 
@@ -1074,6 +1083,7 @@ class Tools:
 
             # Upload file and process content
             file_id, file_collection = await self._upload_file(
+                path,
                 filename,
                 mimetype,
                 content,
@@ -1104,16 +1114,18 @@ class Tools:
         ):
             for distance, metadata, document in zip(distances, metadatas, documents):
                 file_id = metadata.get("file_id")
-                filename = metadata.get("name")
-                # Get existing snippets if source already in results
-                snippets = results.get(file_id, {}).get("snippets", [])
+                source = metadata.get("source")
+                source_hash = blake2b(source.encode()).hexdigest()
+                # Add new source to results or update existing source with new snippets
+                snippets = results.get(source_hash, {}).get("snippets", [])
+                snippets.append(document)
                 # Add new source to results or update existing source with new snippets
                 results.update(
                     {
-                        file_id: {
+                        source_hash: {
                             "id": file_id,
-                            "name": filename,
-                            "snippets": snippets + [document],
+                            "source": source,
+                            "snippets": snippets,
                         }
                     }
                 )
