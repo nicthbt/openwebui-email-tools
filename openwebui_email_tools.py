@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/uppersafe/
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.4.4
+version: 1.5.0
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -18,6 +18,7 @@ import unicodedata
 import mimetypes
 import asyncio
 import logging
+import requests
 import ssl
 from hashlib import blake2b
 from difflib import SequenceMatcher
@@ -38,6 +39,7 @@ from imapclient.exceptions import IMAPClientError, LoginError
 from open_webui.models.users import UserModel
 from open_webui.models.config import Config
 from open_webui.models.files import Files
+from open_webui.storage.provider import Storage
 from open_webui.internal.db import get_async_db_context
 from open_webui.routers.files import upload_file_handler
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
@@ -274,6 +276,114 @@ class MailClient:
         return attachments
 
 
+class OpenTerminalException(Exception):
+    pass
+
+
+class OpenTerminalClient:
+    def __init__(self, __request__, __metadata__):
+        self.http = requests.Session()
+        self.http.cookies.update(__request__.cookies)
+
+        # Forward auth header
+        authorization = __request__.headers.get("Authorization", None)
+        if authorization is not None:
+            self.http.headers.update({"Authorization": authorization})
+
+        # Forward chat ID
+        chat_id = __metadata__.get("chat_id", None)
+        if chat_id is not None:
+            self.http.headers.update({"X-Session-Id": chat_id})
+
+        # Extract terminal ID
+        terminal_id = __metadata__.get("terminal_id", None)
+        if terminal_id is None:
+            raise OpenTerminalException("No terminal set for this chat")
+
+        # Extract internal server
+        host, port = __request__.scope.get("server", None) or (None, None)
+        if host is None or port is None:
+            raise OpenTerminalException("Unable to detect internal server")
+
+        # Build API routes
+        self.server = f"http://{host}:{port}"
+        self.api = {
+            "CWD": __request__.app.url_path_for(
+                "proxy_terminal",
+                server_id=terminal_id,
+                path="files/cwd",
+            ).make_absolute_url(base_url=self.server),
+            "UPLOAD": __request__.app.url_path_for(
+                "proxy_terminal",
+                server_id=terminal_id,
+                path="files/upload",
+            ).make_absolute_url(base_url=self.server),
+            "VIEW": __request__.app.url_path_for(
+                "proxy_terminal",
+                server_id=terminal_id,
+                path="files/view",
+            ).make_absolute_url(base_url=self.server),
+        }
+
+    def __del__(self):
+        self.http.close()
+
+    def get_cwd(self, timeout: int = 10) -> str:
+        response = self.http.get(
+            self.api.get("CWD"),
+            timeout=timeout,
+        )
+        response.raise_for_status()
+
+        # Load response as JSON
+        response_json = response.json()
+
+        return response_json.get("cwd", None)
+
+    def upload_file(
+        self,
+        filename: str,
+        mimetype: str,
+        content: bytes,
+        directory: str = None,
+        timeout: int = 60,
+    ) -> dict:
+        response = self.http.post(
+            self.api.get("UPLOAD"),
+            params={"directory": directory or self.get_cwd()},
+            files={"file": (filename, content, mimetype or "application/octet-stream")},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+
+        # Load response as JSON
+        response_json = response.json()
+
+        path = response_json.get("path", None)
+        size = response_json.get("size", None)
+
+        return {
+            "path": path,
+            "name": filename,
+            "size": size,
+            "content_type": mimetype,
+        }
+
+    def download_file(self, path: str, timeout: int = 60) -> bytes:
+        response = self.http.get(
+            self.api.get("VIEW"),
+            params={"path": path},
+            stream=True,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+
+        content = bytearray()
+        for chunk in response.iter_content(chunk_size=65536):
+            content.extend(chunk)
+        return bytes(content)
+
+
 def with_context(func):
     @wraps(func)
     async def wrapper(self, *args, **kwargs):
@@ -489,6 +599,7 @@ class Tools:
         sender: str,
         to: list,
         cc: list,
+        attachments: dict,
         references: list,
         body_text: str,
         body_html: str,
@@ -533,14 +644,25 @@ class Tools:
             if body_html is not None:
                 msg.add_alternative(body_html, subtype="html")
 
+        # Attach files
+        for filename, content in attachments.items():
+            mimetype, encoding = mimetypes.guess_type(filename)
+            if mimetype is not None:
+                maintype, subtype = mimetype.split("/")
+            else:
+                maintype, subtype = "application", "octet-stream"
+            msg.add_attachment(
+                content,
+                maintype=maintype,
+                subtype=subtype,
+                filename=filename,
+            )
+
         # Add message to mailbox
         session.append(mailbox, msg.as_bytes(), draft=True)
 
         # Merge recipients
         recipients = (to or []) + (cc or [])
-
-        # Declare attachments as empty
-        attachments = []
 
         return self._format_result(
             mailbox,
@@ -549,7 +671,7 @@ class Tools:
             subject,
             sender,
             recipients,
-            attachments,
+            list(attachments.keys()),
         )
 
     def _build_history(self, msg: EmailMessage) -> tuple:
@@ -1006,7 +1128,7 @@ class Tools:
     ) -> str:
         """
         Search for messages on mail server.
-        Best to quickly identify relevant messages from INBOX or other mailboxes.
+        Best for quickly identifying relevant messages from INBOX or other mailboxes.
 
         :param query: The search keywords to look up without special operators or wildcards (optional)
         :param unread: Flag to only look for new messages (optional)
@@ -1032,7 +1154,7 @@ class Tools:
             done=True,
         )
 
-        return json.dumps(list(results), ensure_ascii=False)
+        return json.dumps(results, ensure_ascii=False)
 
     @with_context
     async def inspect_email_messages(
@@ -1153,6 +1275,7 @@ class Tools:
         subject: str = None,
         to: list = None,
         cc: list = None,
+        attachments: list = None,
         __request__: Request = None,
         __user__: dict = None,
         __metadata__: dict = None,
@@ -1168,6 +1291,7 @@ class Tools:
         :param subject: The subject of a new message (overwritten for a reply)
         :param to: A list of recipients for a new message (overwritten for a reply)
         :param cc: A list of extra recipients for carbon copy (optional, overwritten for a reply)
+        :param attachments: A list of file ID or filesystem path (optional)
         :return: JSON with result containing virtual path, date, mailbox, subject, sender and recipients of the draft message
         """
         user, session, mailaddr = self.context.get()
@@ -1213,6 +1337,38 @@ class Tools:
             if body_html is not None and history_html is not None:
                 body_html = f"{body_html}{history_html}"
 
+        # Init Open Terminal client
+        terminal = None
+        try:
+            terminal = OpenTerminalClient(__request__, __metadata__)
+        except OpenTerminalException as e:
+            log.warning(e)
+
+        files = {}
+        attachments = attachments or []
+        for attachment in attachments:
+            # Retrieve file content based on the file ID or the filesystem path
+            if attachment.startswith("/"):
+                if terminal is None:
+                    raise ValueError(f"No terminal available to fetch '{attachment}'")
+                filename = os.path.basename(attachment)
+                content = await asyncio.to_thread(
+                    terminal.download_file,
+                    attachment,
+                )
+                files.update({filename: content})
+            else:
+                file = await Files.get_file_by_id_and_user_id(attachment, user.id)
+                if file is None:
+                    raise ValueError(f"File not found '{attachment}'")
+                filename = file.filename
+                path = await asyncio.to_thread(
+                    Storage.get_file,
+                    file.path,
+                )
+                content = await asyncio.to_thread(lambda: open(path, "rb").read())
+                files.update({filename: content})
+
         result = await asyncio.to_thread(
             self._draft_imap,
             session,
@@ -1220,6 +1376,7 @@ class Tools:
             mailaddr,
             to,
             cc,
+            files,
             references,
             body_text,
             body_html,

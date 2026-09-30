@@ -12,6 +12,7 @@ Search on mail server for information and fetch specific message content using O
 - Caches messages by content hash.
 - Inspects messages and retrieves relevant parts.
 - Secures identity and access management with isolated/user-based authentication.
+- Integrates with Pyodide and Open Terminal.
 - Supports IMAP protocol.
 
 ## Available tools
