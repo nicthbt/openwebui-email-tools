@@ -71,6 +71,7 @@ Input parameters:
 | `subject` | Subject of a new message. |
 | `to` | List of recipients for a new message. |
 | `cc` | List of carbon-copy recipients (optional). |
+| `attachments` | List of file ID or filesystem path (optional). |
 
 The output contains:
 
