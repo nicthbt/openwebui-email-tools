@@ -1,59 +1,76 @@
 """
 title: Email tools
 author: Nicolas THIBAUT
-git_url: https://github.com/uppersafe/
+git_url: https://github.com/nicthbt/openwebui-email-tools
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.5.0
+version: 1.6.0
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
 
-import os
-import io
-import re
-import time
-import json
-import unicodedata
-import mimetypes
-import asyncio
-import logging
-import requests
-import ssl
-from hashlib import blake2b
-from difflib import SequenceMatcher
-from fastapi import Request, UploadFile
-from pydantic import BaseModel, Field
-from contextvars import ContextVar
-from functools import wraps
-from datetime import datetime
-from html import escape, unescape
-from email import policy, message_from_bytes
-from email.message import EmailMessage
-from email.header import decode_header, make_header
-from email.utils import getaddresses, formataddr, format_datetime, make_msgid
-from imapclient import IMAPClient
-from imapclient.response_types import Envelope, BodyData
-from imapclient.exceptions import IMAPClientError, LoginError
 
-from open_webui.models.users import UserModel
+import logging
+import ssl
+from email.header import decode_header
+from email.header import make_header
+from imapclient import IMAPClient
+from imapclient.exceptions import IMAPClientError
+from imapclient.exceptions import LoginError
+from imapclient.response_types import BodyData
+from imapclient.response_types import Envelope
+import requests
+import io
+import mimetypes
+import os
+import re
+import unicodedata
+from contextvars import ContextVar
+from difflib import SequenceMatcher
+from hashlib import blake2b
+from fastapi import Request
+from fastapi import UploadFile
+from open_webui.internal.db import get_async_db_context
 from open_webui.models.config import Config
 from open_webui.models.files import Files
-from open_webui.storage.provider import Storage
-from open_webui.internal.db import get_async_db_context
-from open_webui.routers.files import upload_file_handler
+from open_webui.models.users import UserModel
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
-from open_webui.routers.retrieval import (
-    ProcessFileForm,
-    process_file,
-    QueryCollectionsForm,
-    query_collection_handler,
-)
+from open_webui.routers.files import upload_file_handler
+from open_webui.routers.retrieval import ProcessFileForm
+from open_webui.routers.retrieval import QueryCollectionsForm
+from open_webui.routers.retrieval import process_file
+from open_webui.routers.retrieval import query_collection_handler
+import json
+from functools import wraps
+import asyncio
+import time
+from datetime import datetime
+from email import message_from_bytes
+from email import policy
+from email.message import EmailMessage
+from email.utils import format_datetime
+from email.utils import formataddr
+from email.utils import getaddresses
+from email.utils import make_msgid
+from html import escape
+from html import unescape
+from open_webui.storage.provider import Storage
+from pydantic import BaseModel
+from pydantic import Field
+
 
 log = logging.getLogger(__name__)
 
 
-class MailException(IMAPClientError):
+class CustomToolException(Exception):
+    """Specific exception that can be caught by the with_context decorator"""
+
+    def __init__(self, message, error=None):
+        super().__init__(message)
+        self.error = error
+
+
+class MailException(CustomToolException):
     def __init__(self, message, error=None):
         super().__init__(message)
         self.error = error
@@ -276,7 +293,7 @@ class MailClient:
         return attachments
 
 
-class OpenTerminalException(Exception):
+class OpenTerminalException(CustomToolException):
     pass
 
 
@@ -384,6 +401,310 @@ class OpenTerminalClient:
         return bytes(content)
 
 
+class CustomTool:
+    def __init__(self, namespace):
+        self.valves = self.Valves()
+        self.context = ContextVar(namespace)
+        self.namespace = namespace
+        # Add missing mimetypes
+        msoffice = {
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        }
+        libreoffice = {
+            ".odt": "application/vnd.oasis.opendocument.text",
+            ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+            ".odp": "application/vnd.oasis.opendocument.presentation",
+        }
+        for extension, mimetype in msoffice.items():
+            mimetypes.add_type(mimetype, extension)
+        for extension, mimetype in libreoffice.items():
+            mimetypes.add_type(mimetype, extension)
+
+    def _is_media(
+        self,
+        mimetype: str,
+        checklist: list = ["image/", "audio/", "video/"],
+    ) -> bool:
+        if mimetype is not None:
+            return mimetype.startswith(tuple(checklist))
+        return False
+
+    def _seq_match(self, text: str, keywords: list) -> list:
+        # Normalize text in ascii characters
+        nfkd_text = (
+            unicodedata.normalize("NFKD", text.lower())
+            .encode("ascii", "ignore")
+            .decode()
+        )
+        # Normalize keywords in ascii characters
+        nfkd_keywords = [
+            unicodedata.normalize("NFKD", keyword.lower())
+            .encode("ascii", "ignore")
+            .decode()
+            for keyword in keywords
+        ]
+
+        # Get the match length for each keyword
+        return [
+            SequenceMatcher(None, nfkd_keyword, nfkd_text).find_longest_match().size
+            for nfkd_keyword in nfkd_keywords
+        ]
+
+    def _sort_results(self, results: list, keys: list) -> list:
+        # Sort by keys from lowest to highest priority
+        for key, reverse in reversed(keys):
+            results.sort(key=lambda result: result[key], reverse=reverse)
+        return results[: self.valves.search_count]
+
+    def _extract_keywords(self, query: str) -> list:
+        if query is None or len(query.strip()) == 0:
+            return []
+
+        # Split query on special characters (space, tab, comma, etc) and remove linking words
+        keywords = set(
+            keyword.strip()
+            for keyword in re.split(r"[';,\s\t\r\n]+", query)
+            if len(keyword.strip()) > 1
+        )
+
+        # Check that keywords are not empty
+        if len(keywords) == 0:
+            raise ValueError(f"Cannot build keywords from query string '{query}'")
+
+        return list(keywords)
+
+    async def _query_collections(
+        self,
+        query: str,
+        collections: list,
+        __user__: dict,
+        __request__: Request,
+    ) -> list:
+        # Query the collection using the retrieval engine
+        collection_results = await query_collection_handler(
+            __request__,
+            QueryCollectionsForm(
+                collection_names=collections,
+                query=query,
+            ),
+            user=UserModel(**__user__),
+        )
+
+        results = {}
+
+        # Generate query-focused results (instead of relying on raw results)
+        for distances, metadatas, documents in zip(
+            collection_results.get("distances", []),
+            collection_results.get("metadatas", []),
+            collection_results.get("documents", []),
+        ):
+            for distance, metadata, document in zip(distances, metadatas, documents):
+                file_id = metadata.get("file_id")
+                file_metadata = await Files.get_file_metadata_by_id(file_id)
+                source = file_metadata.meta.get("source") or metadata.get("source")
+                source_hash = blake2b(source.encode()).hexdigest()
+                # Add new source to results or update existing source with new snippets
+                snippets = results.get(source_hash, {}).get("snippets", [])
+                snippets.append(document)
+                # Add new source to results or update existing source with new snippets
+                results.update(
+                    {
+                        source_hash: {
+                            "id": file_id,
+                            "source": source,
+                            "snippets": snippets,
+                        }
+                    }
+                )
+
+        return list(results.values())
+
+    async def _get_cache_file(
+        self,
+        file_hash: str,
+        user: UserModel,
+    ) -> tuple:
+        cache_key = f"{self.namespace}.files.{user.id}.{file_hash}"
+        cache_value = await Config.get(cache_key, {})
+
+        file_id = cache_value.get("id", None)
+        file_collection = cache_value.get("collection", None)
+
+        cleanup = False
+
+        if file_id is not None:
+            file = await Files.get_file_by_id(file_id)
+            if not file:
+                cleanup = True
+
+        if file_collection is not None:
+            collection = await ASYNC_VECTOR_DB_CLIENT.has_collection(file_collection)
+            if not collection:
+                cleanup = True
+
+        # Delete cache if file or collection no longer exist
+        if cleanup:
+            log.warning(f"Deleting cache for {cache_key}")
+            await Config.delete(cache_key)
+            return None, None
+
+        return file_id, file_collection
+
+    async def _set_cache_file(
+        self,
+        file_hash: str,
+        file_id: str,
+        file_collection: str,
+        user: UserModel,
+    ) -> None:
+        cache_key = f"{self.namespace}.files.{user.id}.{file_hash}"
+        cache_value = {
+            "id": file_id,
+            "collection": file_collection,
+        }
+        await Config.upsert({cache_key: cache_value})
+
+    async def _upload_file(
+        self,
+        source: str,
+        filename: str,
+        mimetype: str,
+        content: bytes,
+        process: bool,
+        __user__: dict,
+        __request__: Request,
+    ) -> tuple:
+        async with get_async_db_context() as db:
+            user = UserModel(**__user__)
+
+            # Search for file in cache
+            file_hash = blake2b(source.encode() + b"\0" + content).hexdigest()
+            file_id, file_collection = await self._get_cache_file(
+                file_hash,
+                user=user,
+            )
+
+            # Upload file if not in cache
+            if file_id is None:
+                log.info(f"Uploading '{filename}'")
+                file = await upload_file_handler(
+                    __request__,
+                    UploadFile(
+                        file=io.BytesIO(content),
+                        filename=filename,
+                        headers={"content-type": mimetype},
+                    ),
+                    metadata={},
+                    process=False,
+                    user=user,
+                    db=db,
+                )
+                file_id = file.id
+
+            # Update source
+            await Files.update_file_metadata_by_id(
+                file_id,
+                {"source": source},
+                db=db,
+            )
+
+            # Process file if not in cache
+            if file_collection is None and process is True:
+                log.info(f"Processing '{filename}'")
+                result = await process_file(
+                    __request__,
+                    ProcessFileForm(file_id=file_id),
+                    user=user,
+                    db=db,
+                )
+                file_collection = result.get("collection_name")
+
+            await self._set_cache_file(
+                file_hash,
+                file_id,
+                file_collection,
+                user=user,
+            )
+
+            return file_id, file_collection
+
+    async def _emit_sources(
+        self,
+        event_emitter,
+        files: list,
+    ) -> None:
+        for file in files:
+            file_id = file.get("id")
+            source = file.get("source")
+            filename = os.path.basename(source)
+            snippets = file.get("snippets")
+            if event_emitter:
+                await event_emitter(
+                    {
+                        "type": "source",
+                        "data": {
+                            "source": {
+                                "id": file_id,
+                                "name": filename,
+                                "type": "file",
+                            },
+                            "document": snippets,
+                            "metadata": [
+                                {
+                                    "file_id": file_id,
+                                    "name": filename,
+                                    "source": source,
+                                }
+                                for snippet in snippets
+                            ],
+                        },
+                    }
+                )
+
+    async def _emit_files(
+        self,
+        event_emitter,
+        files: list,
+    ) -> None:
+        if event_emitter:
+            await event_emitter(
+                {
+                    "type": "files",
+                    "data": {
+                        "files": [
+                            (
+                                {**file, "type": "filesystem"}
+                                if file.get("id", None) is None
+                                else {**file, "type": "file"}
+                            )
+                            for file in files
+                        ],
+                    },
+                }
+            )
+
+    async def _emit_status(
+        self,
+        event_emitter,
+        desc: str,
+        done: bool = False,
+        hidden: bool = False,
+    ) -> None:
+        if event_emitter:
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": desc,
+                        "done": done,
+                        "hidden": hidden,
+                    },
+                }
+            )
+
+
 def with_context(func):
     @wraps(func)
     async def wrapper(self, *args, **kwargs):
@@ -407,24 +728,23 @@ def with_context(func):
                 if __metadata__.get("files", None) is None:
                     __metadata__["files"] = []
 
-            user = UserModel(**__user__)
-            mailaddr, password = self._get_credentials(__user__.get("valves"))
+            connect_handler, *other_handlers = self._get_handlers()
 
             await self._emit_status(
                 __event_emitter__,
-                "Connecting to mail server...",
+                "Connecting to server...",
                 done=False,
             )
 
             # Connect to server
-            session = await self._connect_imap(mailaddr, password)
+            session = await connect_handler(__user__, __event_call__)
 
             # Set context for this call
-            token = self.context.set((user, session, mailaddr))
+            token = self.context.set((session, *other_handlers))
 
             return await func(self, *args, **kwargs)
 
-        except MailException as e:
+        except CustomToolException as e:
             log.error(f"{e} ({e.error})" if e.error else str(e))
             return json.dumps({"error": str(e)})
 
@@ -444,7 +764,7 @@ def with_context(func):
     return wrapper
 
 
-class Tools:
+class Tools(CustomTool):
     class UserValves(BaseModel):
         mailaddr: str = Field(
             title="Email address",
@@ -494,11 +814,42 @@ class Tools:
         )
 
     def __init__(self):
-        self.valves = self.Valves()
-        self.context = ContextVar("tools.email")
-        self.namespace = "tools.email.files"
+        super().__init__("tools.email")
 
-    async def _connect_imap(self, mailaddr: str, password: str) -> MailClient:
+    def _get_credentials(self, config: dict) -> dict:
+        if config.mailaddr is None:
+            raise ValueError("Please configure email address")
+
+        if config.password is None:
+            raise ValueError("Please configure email password")
+
+        return config.mailaddr.strip(), config.password.strip()
+
+    def _get_handlers(self) -> tuple:
+        # Return handlers
+        match self.valves.protocol:
+            case "imap":
+                connect_handler = self._connect_imap
+                browse_handler = self._browse_imap
+                download_handler = self._download_imap
+                draft_handler = self._draft_imap
+
+            case _:
+                raise ValueError("Unknown protocol")
+
+        return (
+            connect_handler,
+            browse_handler,
+            download_handler,
+            draft_handler,
+        )
+
+    async def _connect_imap(
+        self,
+        __user__: dict,
+        __event_call__: callable = None,
+    ) -> MailClient:
+        mailaddr, password = self._get_credentials(__user__.get("valves"))
         session = MailClient(
             host=self.valves.host,
             port=self.valves.port or 993,
@@ -631,11 +982,11 @@ class Tools:
         if sender:
             msg["From"] = sender
         if to:
-            msg["To"] = str(", ").join(to)
+            msg["To"] = ", ".join(to)
         if cc:
-            msg["Cc"] = str(", ").join(cc)
+            msg["Cc"] = ", ".join(cc)
         if references:
-            msg["References"] = str(" ").join(references)
+            msg["References"] = " ".join(references)
             msg["In-Reply-To"] = references[-1]
 
         # Set plain text body and alternative
@@ -718,11 +1069,9 @@ class Tools:
         # Build HTML fallback from plain text
         if body_html is None and body_text is not None:
             # Replace plain text line break with HTML line break tag
-            body_html = (
-                str("<br>")
-                .join(escape(line) for line in body_text.splitlines())
-                .strip()
-            )
+            body_html = "<br>".join(
+                escape(line) for line in body_text.splitlines()
+            ).strip()
 
         # Format reply history header
         sender = msg.get("From", None)
@@ -738,7 +1087,7 @@ class Tools:
 
         # Quote reply history
         if body_text:
-            history_text = str("\n").join(
+            history_text = "\n".join(
                 f"> {line}" if line else ">" for line in body_text.splitlines()
             )
             history_text = f"{history_header}\n\n{history_text}"
@@ -793,36 +1142,6 @@ class Tools:
         history_text, history_html = self._build_history(msg)
 
         return subject, to, cc, references, history_text, history_html
-
-    def _get_credentials(self, config: dict) -> dict:
-        if config.mailaddr is None:
-            raise ValueError("Please configure email address")
-
-        if config.password is None:
-            raise ValueError("Please configure email password")
-
-        return config.mailaddr.strip(), config.password.strip()
-
-    def _seq_match(self, text: str, keywords: list) -> list:
-        # Normalize text in ascii characters
-        nfkd_text = (
-            unicodedata.normalize("NFKD", text.lower())
-            .encode("ascii", "ignore")
-            .decode()
-        )
-        # Normalize keywords in ascii characters
-        nfkd_keywords = [
-            unicodedata.normalize("NFKD", keyword.lower())
-            .encode("ascii", "ignore")
-            .decode()
-            for keyword in keywords
-        ]
-
-        # Get the match length for each keyword
-        return [
-            SequenceMatcher(None, nfkd_keyword, nfkd_text).find_longest_match().size
-            for nfkd_keyword in nfkd_keywords
-        ]
 
     def _score_message(
         self,
@@ -903,7 +1222,7 @@ class Tools:
         score: float = None,
     ) -> dict:
         result = {
-            "path": f'/{mailbox}/{message_id}/{subject.replace("/", "-")}.eml',
+            "path": f"/{mailbox}/{message_id}/{subject.replace('/', '-')}.eml",
             "date": date.isoformat(),
             "mailbox": mailbox,
             "subject": subject,
@@ -915,21 +1234,6 @@ class Tools:
             result.update({"score": score})
         return result
 
-    def _sort_results(self, results: list, keys: list) -> list:
-        # Sort by keys from lowest to highest priority
-        for key, reverse in reversed(keys):
-            results.sort(key=lambda result: result[key], reverse=reverse)
-        return results[: self.valves.search_count]
-
-    def _is_media(
-        self,
-        mimetype: str,
-        checklist: list = ["image/", "audio/", "video/"],
-    ) -> bool:
-        if mimetype is not None:
-            return mimetype.startswith(tuple(checklist))
-        return False
-
     def _build_criteria(self, keywords: list) -> str:
         if len(keywords) >= 1:
             keyword = f"(TEXT {json.dumps(keywords[0], ensure_ascii=False)})"
@@ -937,182 +1241,6 @@ class Tools:
                 return f"(OR {keyword} {self._build_criteria(keywords[1:])})"
             return keyword
         return "(ALL)"
-
-    def _extract_keywords(self, query: str) -> list:
-        if query is None or len(query.strip()) == 0:
-            return []
-
-        # Split query on special characters (space, tab, comma, etc) and remove linking words
-        keywords = set(
-            keyword.strip()
-            for keyword in re.split(r"[';,\s\t\r\n]+", query)
-            if len(keyword.strip()) > 1
-        )
-
-        # Check that keywords are not empty
-        if len(keywords) == 0:
-            raise ValueError(f"Cannot build keywords from query string '{query}'")
-
-        return list(keywords)
-
-    async def _get_cache_file(
-        self,
-        file_hash: str,
-        user: UserModel,
-    ) -> tuple:
-        cache_key = f"{self.namespace}.{user.id}.{file_hash}"
-        cache_value = await Config.get(cache_key, {})
-
-        file_id = cache_value.get("id", None)
-        file_collection = cache_value.get("collection", None)
-
-        cleanup = False
-
-        if file_id is not None:
-            file = await Files.get_file_by_id(file_id)
-            if not file:
-                cleanup = True
-
-        if file_collection is not None:
-            collection = await ASYNC_VECTOR_DB_CLIENT.has_collection(file_collection)
-            if not collection:
-                cleanup = True
-
-        # Delete cache if file or collection no longer exist
-        if cleanup:
-            log.warning(f"Deleting cache for {cache_key}")
-            await Config.delete(cache_key)
-            return None, None
-
-        return file_id, file_collection
-
-    async def _set_cache_file(
-        self,
-        file_hash: str,
-        file_id: str,
-        file_collection: str,
-        user: UserModel,
-    ) -> None:
-        cache_key = f"{self.namespace}.{user.id}.{file_hash}"
-        cache_value = {
-            "id": file_id,
-            "collection": file_collection,
-        }
-        await Config.upsert({cache_key: cache_value})
-
-    async def _upload_file(
-        self,
-        source: str,
-        filename: str,
-        mimetype: str,
-        content: bytes,
-        process: bool,
-        user: UserModel,
-        __request__: Request,
-    ) -> tuple:
-        async with get_async_db_context() as db:
-            # Search for file in cache
-            file_hash = blake2b(source.encode() + b"\0" + content).hexdigest()
-            file_id, file_collection = await self._get_cache_file(
-                file_hash,
-                user=user,
-            )
-
-            # Upload file if not in cache
-            if file_id is None:
-                log.info(f"Uploading '{filename}'")
-                file = await upload_file_handler(
-                    __request__,
-                    UploadFile(
-                        file=io.BytesIO(content),
-                        filename=filename,
-                        headers={"content-type": mimetype},
-                    ),
-                    metadata={},
-                    process=False,
-                    user=user,
-                    db=db,
-                )
-                file_id = file.id
-
-            # Update source
-            await Files.update_file_metadata_by_id(
-                file_id,
-                {"source": source},
-                db=db,
-            )
-
-            # Process file if not in cache
-            if file_collection is None and process is True:
-                log.info(f"Processing '{filename}'")
-                result = await process_file(
-                    __request__,
-                    ProcessFileForm(file_id=file_id),
-                    user=user,
-                    db=db,
-                )
-                file_collection = result.get("collection_name")
-
-            await self._set_cache_file(
-                file_hash,
-                file_id,
-                file_collection,
-                user=user,
-            )
-
-            return file_id, file_collection
-
-    async def _emit_sources(
-        self,
-        event_emitter,
-        files: list,
-    ) -> None:
-        for file in files:
-            file_id = file.get("id")
-            source = file.get("source")
-            filename = os.path.basename(source)
-            snippets = file.get("snippets")
-            if event_emitter:
-                await event_emitter(
-                    {
-                        "type": "source",
-                        "data": {
-                            "source": {
-                                "id": file_id,
-                                "name": filename,
-                                "type": "file",
-                            },
-                            "document": snippets,
-                            "metadata": [
-                                {
-                                    "file_id": file_id,
-                                    "name": filename,
-                                    "source": source,
-                                }
-                                for snippet in snippets
-                            ],
-                        },
-                    }
-                )
-
-    async def _emit_status(
-        self,
-        event_emitter,
-        desc: str,
-        done: bool = False,
-        hidden: bool = False,
-    ) -> None:
-        if event_emitter:
-            await event_emitter(
-                {
-                    "type": "status",
-                    "data": {
-                        "description": desc,
-                        "done": done,
-                        "hidden": hidden,
-                    },
-                }
-            )
 
     @with_context
     async def search_email_messages(
@@ -1135,7 +1263,7 @@ class Tools:
         :param mailboxes: A list of mailboxes to look into (optional, defaults to all except "Trash", "Bin", "Junk" and "Spam")
         :return: JSON with results containing virtual path, date, mailbox, subject, sender, recipients, attachments and search score of each message
         """
-        user, session, mailaddr = self.context.get()
+        session, browse_handler, download_handler, draft_handler = self.context.get()
 
         await self._emit_status(
             __event_emitter__,
@@ -1145,7 +1273,7 @@ class Tools:
 
         # Browse messages on mail server
         results = await asyncio.to_thread(
-            self._browse_imap, session, query, unread, mailboxes
+            browse_handler, session, query, unread, mailboxes
         )
 
         await self._emit_status(
@@ -1175,7 +1303,7 @@ class Tools:
         :param messages: A list of path for messages to look into
         :return: JSON with results containing file ID, source path and search snippets for each message
         """
-        user, session, mailaddr = self.context.get()
+        session, browse_handler, download_handler, draft_handler = self.context.get()
 
         await self._emit_status(
             __event_emitter__,
@@ -1200,7 +1328,7 @@ class Tools:
 
             log.info(f"Downloading '{path}'")
             content = await asyncio.to_thread(
-                self._download_imap, session, mailbox, message_id
+                download_handler, session, mailbox, message_id
             )
 
             # Upload file and process content
@@ -1210,52 +1338,22 @@ class Tools:
                 mimetype,
                 content,
                 process=True,
-                user=user,
+                __user__=__user__,
                 __request__=__request__,
             )
 
             collections.append(file_collection)
 
-        # Query the collection using the retrieval engine
-        collection_results = await query_collection_handler(
-            __request__,
-            QueryCollectionsForm(
-                collection_names=collections,
-                query=query,
-            ),
-            user=user,
+        results = await self._query_collections(
+            query,
+            collections,
+            __user__=__user__,
+            __request__=__request__,
         )
-
-        results = {}
-
-        # Generate query-focused results (instead of relying on raw results)
-        for distances, metadatas, documents in zip(
-            collection_results.get("distances", []),
-            collection_results.get("metadatas", []),
-            collection_results.get("documents", []),
-        ):
-            for distance, metadata, document in zip(distances, metadatas, documents):
-                file_id = metadata.get("file_id")
-                file_metadata = await Files.get_file_metadata_by_id(file_id)
-                source = file_metadata.meta.get("source") or metadata.get("source")
-                source_hash = blake2b(source.encode()).hexdigest()
-                # Add new source to results or update existing source with new snippets
-                snippets = results.get(source_hash, {}).get("snippets", [])
-                snippets.append(document)
-                # Add new source to results or update existing source with new snippets
-                results.update(
-                    {
-                        source_hash: {
-                            "id": file_id,
-                            "source": source,
-                            "snippets": snippets,
-                        }
-                    }
-                )
 
         await self._emit_sources(
             __event_emitter__,
-            list(results.values()),
+            results,
         )
 
         await self._emit_status(
@@ -1264,7 +1362,7 @@ class Tools:
             done=True,
         )
 
-        return json.dumps(list(results.values()), ensure_ascii=False)
+        return json.dumps(results, ensure_ascii=False)
 
     @with_context
     async def write_email_message(
@@ -1294,13 +1392,15 @@ class Tools:
         :param attachments: A list of file ID or filesystem path (optional)
         :return: JSON with result containing virtual path, date, mailbox, subject, sender and recipients of the draft message
         """
-        user, session, mailaddr = self.context.get()
+        session, browse_handler, download_handler, draft_handler = self.context.get()
 
         await self._emit_status(
             __event_emitter__,
-            f"Drafting message...",
+            "Drafting message...",
             done=False,
         )
+
+        mailaddr, _ = self._get_credentials(__user__.get("valves"))
 
         references = []
         history_text = None
@@ -1318,7 +1418,7 @@ class Tools:
             )
             mimetype, encoding = mimetypes.guess_type(filename)
 
-            if not mimetype.startswith("message/"):
+            if mimetype is None or not mimetype.startswith("message/"):
                 raise TypeError(f"Invalid mimetype '{mimetype}' for '{path}'")
 
             log.info(f"Downloading '{path}'")
@@ -1358,7 +1458,7 @@ class Tools:
                 )
                 files.update({filename: content})
             else:
-                file = await Files.get_file_by_id_and_user_id(attachment, user.id)
+                file = await Files.get_file_by_id(attachment)
                 if file is None:
                     raise ValueError(f"File not found '{attachment}'")
                 filename = file.filename
@@ -1366,11 +1466,12 @@ class Tools:
                     Storage.get_file,
                     file.path,
                 )
-                content = await asyncio.to_thread(lambda: open(path, "rb").read())
+                with open(path, "rb") as f:
+                    content = f.read()
                 files.update({filename: content})
 
         result = await asyncio.to_thread(
-            self._draft_imap,
+            draft_handler,
             session,
             subject,
             mailaddr,
@@ -1384,7 +1485,7 @@ class Tools:
 
         await self._emit_status(
             __event_emitter__,
-            f"Message draft done.",
+            "Message draft done.",
             done=True,
         )
 
