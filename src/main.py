@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/nicthbt/openwebui-email-tools
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.6.0
+version: 1.6.2
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -29,13 +29,13 @@ from pydantic import BaseModel, Field
 
 from src.clients.mail_client import MailClient
 from src.clients.terminal_client import OpenTerminalClient, OpenTerminalException
-from src.common.base import CustomTool
-from src.common.decorators import with_context
+from src.common.decorators import custom_tool, with_context
 
 log = logging.getLogger(__name__)
 
 
-class Tools(CustomTool):
+@custom_tool
+class Tools:
     class UserValves(BaseModel):
         mailaddr: str = Field(
             title="Email address",

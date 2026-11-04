@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/nicthbt/openwebui-email-tools
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.6.0
+version: 1.6.2
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -705,6 +705,10 @@ class CustomTool:
             )
 
 
+def custom_tool(cls):
+    return type(cls.__name__, (cls, CustomTool), {})
+
+
 def with_context(func):
     @wraps(func)
     async def wrapper(self, *args, **kwargs):
@@ -764,7 +768,8 @@ def with_context(func):
     return wrapper
 
 
-class Tools(CustomTool):
+@custom_tool
+class Tools:
     class UserValves(BaseModel):
         mailaddr: str = Field(
             title="Email address",
