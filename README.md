@@ -2,22 +2,22 @@
 
 Search on mail server for information and fetch specific message content using Open WebUI's RAG engine.
 
-## Features
+## ✨ Features
 
-- Writes new messages with plain text or HTML content.
-- Replies to conversations and threads.
-- Searches for messages in specified mailboxes.
-- Ranks search results using keywords scoring and email date.
-- Downloads messages as EML files and processes content in vector database.
-- Caches messages by content hash.
-- Inspects messages and retrieves relevant parts.
-- Secures identity and access management with isolated/user-based authentication.
-- Integrates with Pyodide and Open Terminal.
-- Supports IMAP protocol.
+- ✍️ Writes new messages with plain text or HTML content.
+- 💬 Replies to conversations and threads.
+- 🔍 Searches for messages in specified mailboxes.
+- 🏆 Ranks search results using keywords scoring and email date.
+- 📥 Downloads messages as EML files and processes content in vector database.
+- ⚡ Caches messages by content hash.
+- 📧 Inspects messages and retrieves relevant parts.
+- 🔐 Secures identity and access management with isolated/user-based authentication.
+- 🧩 Integrates with Pyodide and Open Terminal.
+- 🔌 Supports IMAP protocol.
 
-## Available tools
+## 🛠️ Available tools
 
-### `search_email_messages`
+### 🔍 `search_email_messages`
 
 Searches for messages on the mail server and returns metadata.
 
@@ -40,7 +40,7 @@ The output contains for each result:
 - Attachments
 - Search score
 
-### `inspect_email_messages`
+### 📧 `inspect_email_messages`
 
 Retrieves specific messages from the mail server and uses Open WebUI's retrieval engine to find relevant parts.
 
@@ -57,7 +57,7 @@ The output contains for each result:
 - Source path
 - Text snippets
 
-### `write_email_message`
+### ✍️ `write_email_message`
 
 Creates a draft email by composing a new message or by replying to an existing message.
 
@@ -83,7 +83,7 @@ The output contains:
 - Recipients
 - Attachments
 
-## Installation
+## 📦 Installation
 
 1. Go to `Workspace` in Open WebUI.
 2. Create a new tool from the `Tools` tab.
@@ -92,16 +92,16 @@ The output contains:
 5. Configure the tool valves to change default settings.
 6. Configure the mail address and password for each user.
 
-## Configuration
+## ⚙️ Configuration
 
-### User Valves
+### 👤 User Valves
 
 | Setting | Description |
 |---|---|
 | `mailaddr` | Email account address. |
 | `password` | Email account password. |
 
-### Tool Valves
+### 🔧 Tool Valves
 
 | Setting | Default | Description |
 |---|---:|---|
@@ -114,7 +114,7 @@ The output contains:
 
 When `port` is not set, the protocol default port (`993`) is used.
 
-## Security
+## 🛡️ Security
 
 **Apple and Google require to setup an app password** to access your account over the IMAP protocol:
 - Apple: https://account.apple.com/account/manage
@@ -126,13 +126,13 @@ When `port` is not set, the protocol default port (`993`) is used.
 
 Restrict network access between Open WebUI and the mail server.
 
-## Compatibility
+## ✅ Compatibility
 
-Tested with **Open WebUI 0.10.2**.
+Tested **from Open WebUI 0.10.2 to 0.12.5**.
 
 The tool imports internal Open WebUI modules, so compatibility with earlier or later releases is not guaranteed.
 
-## Requirements
+## 📌 Requirements
 
 Allow Open WebUI to install listed requirements:
 - Set `ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS` to `true`.
@@ -141,6 +141,6 @@ Allow Open WebUI to install listed requirements:
 The tool relies on a 3rd party Python package:
 - [imapclient](https://github.com/mjs/imapclient)
 
-## License
+## ℹ️ License
 
 [GNU AGPLv3](LICENSE)
