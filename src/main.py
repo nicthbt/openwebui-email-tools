@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/nicthbt/openwebui-email-tools
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.6.2
+version: 1.6.3
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -13,7 +13,6 @@ import asyncio
 import json
 import logging
 import mimetypes
-import os
 import re
 import time
 from datetime import datetime
@@ -23,8 +22,6 @@ from email.utils import format_datetime, formataddr, getaddresses, make_msgid
 from html import escape, unescape
 
 from fastapi import Request
-from open_webui.models.files import Files
-from open_webui.storage.provider import Storage
 from pydantic import BaseModel, Field
 
 from src.clients.mail_client import MailClient
@@ -663,7 +660,7 @@ class Tools:
         :param attachments: A list of file ID or filesystem path (optional)
         :return: JSON with result containing virtual path, date, mailbox, subject, sender and recipients of the draft message
         """
-        session, browse_handler, download_handler, draft_handler = self.context.get()
+        session, *_, draft_handler = self.context.get()
 
         await self._emit_status(
             __event_emitter__,
@@ -716,30 +713,9 @@ class Tools:
             log.warning(e)
 
         files = {}
-        attachments = attachments or []
-        for attachment in attachments:
-            # Retrieve file content based on the file ID or the filesystem path
-            if attachment.startswith("/"):
-                if terminal is None:
-                    raise ValueError(f"No terminal available to fetch '{attachment}'")
-                filename = os.path.basename(attachment)
-                content = await asyncio.to_thread(
-                    terminal.download_file,
-                    attachment,
-                )
-                files.update({filename: content})
-            else:
-                file = await Files.get_file_by_id(attachment)
-                if file is None:
-                    raise ValueError(f"File not found '{attachment}'")
-                filename = file.filename
-                path = await asyncio.to_thread(
-                    Storage.get_file,
-                    file.path,
-                )
-                with open(path, "rb") as f:
-                    content = f.read()
-                files.update({filename: content})
+        for attachment in attachments or []:
+            filename, content = await self._get_file(attachment, terminal)
+            files.update({filename: content})
 
         result = await asyncio.to_thread(
             draft_handler,
@@ -756,7 +732,7 @@ class Tools:
 
         await self._emit_status(
             __event_emitter__,
-            "Message draft done.",
+            "Message draft written.",
             done=True,
         )
 

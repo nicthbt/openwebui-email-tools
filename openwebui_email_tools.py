@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/nicthbt/openwebui-email-tools
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.6.2
+version: 1.6.3
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -20,6 +20,7 @@ from imapclient.exceptions import LoginError
 from imapclient.response_types import BodyData
 from imapclient.response_types import Envelope
 import requests
+import asyncio
 import io
 import mimetypes
 import os
@@ -40,9 +41,9 @@ from open_webui.routers.retrieval import ProcessFileForm
 from open_webui.routers.retrieval import QueryCollectionsForm
 from open_webui.routers.retrieval import process_file
 from open_webui.routers.retrieval import query_collection_handler
+from open_webui.storage.provider import Storage
 import json
 from functools import wraps
-import asyncio
 import time
 from datetime import datetime
 from email import message_from_bytes
@@ -54,7 +55,6 @@ from email.utils import getaddresses
 from email.utils import make_msgid
 from html import escape
 from html import unescape
-from open_webui.storage.provider import Storage
 from pydantic import BaseModel
 from pydantic import Field
 
@@ -565,6 +565,29 @@ class CustomTool:
             "collection": file_collection,
         }
         await Config.upsert({cache_key: cache_value})
+
+    async def _get_file(self, source: str, terminal=None) -> tuple:
+        # Retrieve file content based on the file ID or the filesystem path
+        if source.startswith("/"):
+            if terminal is None:
+                raise ValueError(f"No terminal available to fetch '{source}'")
+            filename = os.path.basename(source)
+            content = await asyncio.to_thread(
+                terminal.download_file,
+                source,
+            )
+        else:
+            file = await Files.get_file_by_id(source)
+            if file is None:
+                raise ValueError(f"File not found '{source}'")
+            filename = file.filename
+            path = await asyncio.to_thread(
+                Storage.get_file,
+                file.path,
+            )
+            with open(path, "rb") as f:
+                content = f.read()
+        return filename, content
 
     async def _upload_file(
         self,
@@ -1397,7 +1420,7 @@ class Tools:
         :param attachments: A list of file ID or filesystem path (optional)
         :return: JSON with result containing virtual path, date, mailbox, subject, sender and recipients of the draft message
         """
-        session, browse_handler, download_handler, draft_handler = self.context.get()
+        session, *_, draft_handler = self.context.get()
 
         await self._emit_status(
             __event_emitter__,
@@ -1450,30 +1473,9 @@ class Tools:
             log.warning(e)
 
         files = {}
-        attachments = attachments or []
-        for attachment in attachments:
-            # Retrieve file content based on the file ID or the filesystem path
-            if attachment.startswith("/"):
-                if terminal is None:
-                    raise ValueError(f"No terminal available to fetch '{attachment}'")
-                filename = os.path.basename(attachment)
-                content = await asyncio.to_thread(
-                    terminal.download_file,
-                    attachment,
-                )
-                files.update({filename: content})
-            else:
-                file = await Files.get_file_by_id(attachment)
-                if file is None:
-                    raise ValueError(f"File not found '{attachment}'")
-                filename = file.filename
-                path = await asyncio.to_thread(
-                    Storage.get_file,
-                    file.path,
-                )
-                with open(path, "rb") as f:
-                    content = f.read()
-                files.update({filename: content})
+        for attachment in attachments or []:
+            filename, content = await self._get_file(attachment, terminal)
+            files.update({filename: content})
 
         result = await asyncio.to_thread(
             draft_handler,
@@ -1490,7 +1492,7 @@ class Tools:
 
         await self._emit_status(
             __event_emitter__,
-            "Message draft done.",
+            "Message draft written.",
             done=True,
         )
 
