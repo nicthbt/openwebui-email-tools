@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/nicthbt/openwebui-email-tools
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.6.3
+version: 1.7.0
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
@@ -859,8 +859,8 @@ class Tools:
             case "imap":
                 connect_handler = self._connect_imap
                 browse_handler = self._browse_imap
-                download_handler = self._download_imap
-                draft_handler = self._draft_imap
+                read_handler = self._read_imap
+                write_handler = self._write_imap
 
             case _:
                 raise ValueError("Unknown protocol")
@@ -868,8 +868,8 @@ class Tools:
         return (
             connect_handler,
             browse_handler,
-            download_handler,
-            draft_handler,
+            read_handler,
+            write_handler,
         )
 
     async def _connect_imap(
@@ -961,7 +961,7 @@ class Tools:
         # Sort results and return best matches
         return self._sort_results(results, [("score", True), ("date", True)])
 
-    def _download_imap(self, session, mailbox: str, message_id: str) -> bytes:
+    def _read_imap(self, session, mailbox: str, message_id: str) -> bytes:
         # Search for the message
         criteria = f"(HEADER Message-ID {json.dumps(message_id)})"
         uids = session.search(mailbox, criteria)
@@ -971,7 +971,7 @@ class Tools:
 
         return session.fetch_raw(mailbox, next(iter(uids)))
 
-    def _draft_imap(
+    def _write_imap(
         self,
         session,
         subject: str,
@@ -1291,7 +1291,7 @@ class Tools:
         :param mailboxes: A list of mailboxes to look into (optional, defaults to all except "Trash", "Bin", "Junk" and "Spam")
         :return: JSON with results containing virtual path, date, mailbox, subject, sender, recipients, attachments and search score of each message
         """
-        session, browse_handler, download_handler, draft_handler = self.context.get()
+        session, browse_handler, read_handler, write_handler = self.context.get()
 
         await self._emit_status(
             __event_emitter__,
@@ -1331,7 +1331,7 @@ class Tools:
         :param messages: A list of path for messages to look into
         :return: JSON with results containing file ID, source path and search snippets for each message
         """
-        session, browse_handler, download_handler, draft_handler = self.context.get()
+        session, browse_handler, read_handler, write_handler = self.context.get()
 
         await self._emit_status(
             __event_emitter__,
@@ -1356,7 +1356,7 @@ class Tools:
 
             log.info(f"Downloading '{path}'")
             content = await asyncio.to_thread(
-                download_handler, session, mailbox, message_id
+                read_handler, session, mailbox, message_id
             )
 
             # Upload file and process content
@@ -1393,7 +1393,7 @@ class Tools:
         return json.dumps(results, ensure_ascii=False)
 
     @with_context
-    async def write_email_message(
+    async def draft_email_message(
         self,
         body_text: str,
         body_html: str,
@@ -1420,7 +1420,7 @@ class Tools:
         :param attachments: A list of file ID or filesystem path (optional)
         :return: JSON with result containing virtual path, date, mailbox, subject, sender and recipients of the draft message
         """
-        session, *_, draft_handler = self.context.get()
+        session, *_, write_handler = self.context.get()
 
         await self._emit_status(
             __event_emitter__,
@@ -1451,7 +1451,7 @@ class Tools:
 
             log.info(f"Downloading '{path}'")
             content = await asyncio.to_thread(
-                self._download_imap, session, mailbox, message_id
+                self._read_imap, session, mailbox, message_id
             )
 
             # Extract details from message
@@ -1478,7 +1478,7 @@ class Tools:
             files.update({filename: content})
 
         result = await asyncio.to_thread(
-            draft_handler,
+            write_handler,
             session,
             subject,
             mailaddr,

@@ -57,7 +57,7 @@ The output contains for each result:
 - Source path
 - Text snippets
 
-### ✍️ `write_email_message`
+### ✍️ `draft_email_message`
 
 Creates a draft email by composing a new message or by replying to an existing message.
 

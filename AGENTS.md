@@ -33,7 +33,7 @@ The tool executes *inside* Open WebUI and imports its internals (`open_webui.mod
 ## Tool anatomy
 
 - `@custom_tool` on the `Tools` class mixes in `CustomTool` (`src/common/base.py`).
-- Public tool methods (`search_email_messages`, `inspect_email_messages`, `write_email_message`) are decorated with `@with_context`, which opens the mail session, converts exceptions to `{"error": ...}` JSON, and manages per-call context.
+- Public tool methods (`search_email_messages`, `inspect_email_messages`, `draft_email_message`) are decorated with `@with_context`, which opens the mail session, converts exceptions to `{"error": ...}` JSON, and manages per-call context.
 - Dunder params (`__request__`, `__user__`, `__metadata__`, `__event_emitter__`, `__event_call__`) are injected by Open WebUI at call time — not regular arguments.
 - `Valves` / `UserValves` are pydantic models declared on the `Tools` class; protocol handler dispatch lives in `_get_handlers`.
 
