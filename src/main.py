@@ -4,7 +4,7 @@ author: Nicolas THIBAUT
 git_url: https://github.com/nicthbt/openwebui-email-tools
 description: Search on mail server for information and fetch specific message content.
 license: AGPL-3.0-only
-version: 1.7.0
+version: 1.7.1
 required_open_webui_version: 0.10.2
 requirements: imapclient
 """
